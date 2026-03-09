@@ -51,15 +51,34 @@ async function getChannels() {
 
 // Agenda um post no Buffer via GraphQL (sintaxe oficial da documentação)
 async function createPost(channelId, text, scheduledAt) {
+
   const mutation = `
-    mutation CreatePost {
-      createPost(input: {
-        text: ${JSON.stringify(text)},
-        channelId: ${JSON.stringify(channelId)},
-        schedulingType: automatic,
-        mode: customSchedule,
-        dueAt: ${JSON.stringify(scheduledAt)}
-      }) {
+    mutation CreatePost($input: CreatePostInput!) {
+      createPost(input: $input) {
+        ... on PostActionSuccess {
+          post {
+            id
+            status
+          }
+        }
+        ... on MutationError {
+          message
+        }
+      }
+    }
+  `;
+
+  const variables = {
+    input: {
+      text: text,
+      channelId: channelId,
+      schedulingType: "custom",
+      dueAt: scheduledAt
+    }
+  };
+
+  return bufferGraphQL(mutation, variables);
+}
         ... on PostActionSuccess {
           post {
             id
