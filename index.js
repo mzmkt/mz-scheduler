@@ -49,38 +49,38 @@ async function getChannels() {
   return data?.data?.channels || [];
 }
 
-// Agenda um post no Buffer via GraphQL
+// Agenda um post no Buffer via GraphQL (sintaxe correta)
 async function createPost(channelId, text, scheduledAt, imageUrl) {
-  const variables = {
-    input: {
-      channelId,
-      content: {
-        text,
-        ...(imageUrl ? { media: [{ url: imageUrl, mediaType: 'IMAGE' }] } : {})
-      },
-      scheduling: {
-        scheduledAt
-      }
-    }
-  };
-
-  const data = await bufferGraphQL(`
-    mutation CreatePost($input: PostCreateInput!) {
-      postCreate(input: $input) {
-        post {
-          id
-          status
-          scheduledAt
+  const mutation = `
+    mutation CreatePost {
+      createPost(input: {
+        text: ${JSON.stringify(text)},
+        channelId: ${JSON.stringify(channelId)},
+        schedulingType: scheduled,
+        dueAt: ${JSON.stringify(scheduledAt)}
+      }) {
+        ... on PostActionSuccess {
+          post {
+            id
+            status
+          }
         }
-        userErrors {
+        ... on MutationError {
           message
-          field
         }
       }
     }
-  `, variables);
+  `;
 
-  return data;
+  const resp = await fetch('https://api.buffer.com', {
+    method: 'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${BUFFER_TOKEN}`
+    },
+    body: JSON.stringify({ query: mutation })
+  });
+  return resp.json();
 }
 
 // ── Endpoint principal ──────────────────────────────────────────────
@@ -120,13 +120,14 @@ app.post('/schedule', async (req, res) => {
     if (!profile.id) continue;
     try {
       const data = await createPost(profile.id, profile.text || '', scheduled_at, image_url);
-      const post = data?.data?.postCreate?.post;
-      const errs = data?.data?.postCreate?.userErrors;
+      const result = data?.data?.createPost;
 
-      if (post?.id) {
-        results.push({ channelId: profile.id, postId: post.id, status: post.status });
-      } else if (errs?.length) {
-        errors.push({ channelId: profile.id, error: errs.map(e => e.message).join(', ') });
+      if (result?.post?.id) {
+        results.push({ channelId: profile.id, postId: result.post.id, status: result.post.status });
+      } else if (result?.message) {
+        errors.push({ channelId: profile.id, error: result.message });
+      } else if (data?.errors) {
+        errors.push({ channelId: profile.id, error: data.errors.map(e => e.message).join(', ') });
       } else {
         errors.push({ channelId: profile.id, error: JSON.stringify(data) });
       }
