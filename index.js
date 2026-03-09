@@ -127,7 +127,15 @@ app.post('/schedule', async (req, res) => {
   // Busca os channelIds reais da nova API GraphQL do Buffer
   let channels = [];
   try {
-    const chData = await bufferGraphQL(`query { channels { id name service } }`);
+   const chData = await bufferGraphQL(`
+  query {
+    channels(input: {}) {
+      id
+      name
+      service
+    }
+  }
+`);
     channels = chData?.data?.channels || [];
     console.log('Canais encontrados:', channels.map(c => `${c.service}:${c.name}:${c.id}`));
   } catch(e) {
