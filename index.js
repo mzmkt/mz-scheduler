@@ -57,6 +57,7 @@ async function createPost(channelId, text, scheduledAt, imageUrl) {
         text: ${JSON.stringify(text)},
         channelId: ${JSON.stringify(channelId)},
         schedulingType: scheduled,
+        mode: customSchedule,
         dueAt: ${JSON.stringify(scheduledAt)}
       }) {
         ... on PostActionSuccess {
