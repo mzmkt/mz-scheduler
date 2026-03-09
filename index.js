@@ -4,7 +4,7 @@ const app     = express();
 
 app.use(express.json());
 
-// ── CORS: permite chamadas do seu site Netlify ──────────────────────
+// ── CORS ────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -13,7 +13,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// ── Variáveis de ambiente (configuradas no Railway) ─────────────────
 const BUFFER_TOKEN = process.env.BUFFER_TOKEN;
 const PORT         = process.env.PORT || 3000;
 
@@ -22,95 +21,127 @@ app.get('/', (req, res) => {
   res.json({ status: 'MZ Scheduler online ✅', time: new Date().toISOString() });
 });
 
-// ── Endpoint principal: recebe post aprovado e agenda no Buffer ─────
+// ── Buffer GraphQL API ──────────────────────────────────────────────
+async function bufferGraphQL(query, variables) {
+  const resp = await fetch('https://api.buffer.com/graphql', {
+    method: 'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${BUFFER_TOKEN}`
+    },
+    body: JSON.stringify({ query, variables })
+  });
+  return resp.json();
+}
+
+// Busca os channelIds reais da conta Buffer
+async function getChannels() {
+  const data = await bufferGraphQL(`
+    query {
+      channels {
+        id
+        name
+        service
+        serviceId
+      }
+    }
+  `);
+  return data?.data?.channels || [];
+}
+
+// Agenda um post no Buffer via GraphQL
+async function createPost(channelId, text, scheduledAt, imageUrl) {
+  const variables = {
+    input: {
+      channelId,
+      content: {
+        text,
+        ...(imageUrl ? { media: [{ url: imageUrl, mediaType: 'IMAGE' }] } : {})
+      },
+      scheduling: {
+        scheduledAt
+      }
+    }
+  };
+
+  const data = await bufferGraphQL(`
+    mutation CreatePost($input: PostCreateInput!) {
+      postCreate(input: $input) {
+        post {
+          id
+          status
+          scheduledAt
+        }
+        userErrors {
+          message
+          field
+        }
+      }
+    }
+  `, variables);
+
+  return data;
+}
+
+// ── Endpoint principal ──────────────────────────────────────────────
 app.post('/schedule', async (req, res) => {
-  const {
-    post_num,
-    copy_ig,
-    copy_li,
-    scheduled_at,
-    image_url,
-    buffer_channels,
-    canal
-  } = req.body;
+  const { post_num, copy_ig, copy_li, scheduled_at, image_url, buffer_channels, canal } = req.body;
 
   if (!BUFFER_TOKEN) {
-    return res.status(500).json({ error: 'BUFFER_TOKEN não configurado no Railway' });
+    return res.status(500).json({ error: 'BUFFER_TOKEN não configurado' });
   }
 
-  if (!scheduled_at) {
-    return res.status(400).json({ error: 'scheduled_at ausente no payload' });
-  }
+  const c = (canal || '').toLowerCase();
+  const ch = buffer_channels || {};
 
   // Determina quais canais usar
-  const channels = buffer_channels || {};
-  const c = (canal || '').toLowerCase();
-
   let profileIds = [];
   if (c === 'linkedin' || c === 'li') {
-    profileIds = [channels.linkedin_juliana, channels.linkedin_page].filter(Boolean);
-  } else if (c === 'instagram' || c === 'ig') {
-    profileIds = [channels.instagram].filter(Boolean);
-  } else {
-    // Padrão: todos (Instagram + LinkedIn)
     profileIds = [
-      channels.instagram,
-      channels.linkedin_juliana,
-      channels.linkedin_page
-    ].filter(Boolean);
+      { id: ch.linkedin_juliana, text: copy_li },
+      { id: ch.linkedin_page,    text: copy_li }
+    ];
+  } else if (c === 'instagram' || c === 'ig') {
+    profileIds = [
+      { id: ch.instagram, text: copy_ig }
+    ];
+  } else {
+    profileIds = [
+      { id: ch.instagram,        text: copy_ig },
+      { id: ch.linkedin_juliana, text: copy_li },
+      { id: ch.linkedin_page,    text: copy_li }
+    ];
   }
 
   const results = [];
   const errors  = [];
 
-  for (const profileId of profileIds) {
-    const isLinkedIn = (
-      profileId === channels.linkedin_juliana ||
-      profileId === channels.linkedin_page
-    );
-
-    const text = isLinkedIn ? copy_li : copy_ig;
-
-    // Monta body para a API do Buffer
-    const params = new URLSearchParams();
-    params.append('profile_ids[]', profileId);
-    params.append('text', text || '');
-    params.append('scheduled_at', scheduled_at);
-    if (image_url) {
-      params.append('media[photo]', image_url);
-    }
-
+  for (const profile of profileIds) {
+    if (!profile.id) continue;
     try {
-      const resp = await fetch('https://api.bufferapp.com/1/updates/create.json', {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/x-www-form-urlencoded',
-          'Authorization': `Bearer ${BUFFER_TOKEN}`
-        },
-        body: params.toString()
-      });
+      const data = await createPost(profile.id, profile.text || '', scheduled_at, image_url);
+      const post = data?.data?.postCreate?.post;
+      const errs = data?.data?.postCreate?.userErrors;
 
-      const data = await resp.json();
-
-      if (resp.ok && data.success) {
-        results.push({ profileId, status: 'agendado', update_id: data.updates?.[0]?.id });
+      if (post?.id) {
+        results.push({ channelId: profile.id, postId: post.id, status: post.status });
+      } else if (errs?.length) {
+        errors.push({ channelId: profile.id, error: errs.map(e => e.message).join(', ') });
       } else {
-        errors.push({ profileId, error: data.message || `HTTP ${resp.status}` });
+        errors.push({ channelId: profile.id, error: JSON.stringify(data) });
       }
-    } catch (e) {
-      errors.push({ profileId, error: e.message });
+    } catch(e) {
+      errors.push({ channelId: profile.id, error: e.message });
     }
   }
 
-  // Resposta
+  console.log(`POST ${post_num}: ${results.length} ok, ${errors.length} erros`, { results, errors });
+
   if (errors.length === 0) {
-    console.log(`✅ POST ${post_num} agendado em ${results.length} canal(is) para ${scheduled_at}`);
     return res.json({ ok: true, agendados: results.length, results });
   } else if (results.length > 0) {
-    console.warn(`⚠️ POST ${post_num}: ${results.length} ok, ${errors.length} erro(s)`, errors);
     return res.status(207).json({ ok: 'parcial', results, errors });
   } else {
-    console.error(`❌ POST ${post_num}: todos falharam`, errors);
     return res.status(500).json({ ok: false, errors });
   }
 });
