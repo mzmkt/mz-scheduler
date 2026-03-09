@@ -36,15 +36,14 @@ async function bufferGraphQL(query, variables) {
 
 // Busca os channelIds reais da conta Buffer
 async function getChannels() {
-  const data = await bufferGraphQL(`
-    query {
-      channels {
-        id
-        name
-        service
-        serviceId
-      }
+ const data = await bufferGraphQL(`
+  query {
+    channels(input: {}) {
+      id
+      name
+      service
     }
+  }
   `);
   return data?.data?.channels || [];
 }
