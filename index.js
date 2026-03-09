@@ -49,15 +49,15 @@ async function getChannels() {
   return data?.data?.channels || [];
 }
 
-// Agenda um post no Buffer via GraphQL (sintaxe correta)
-async function createPost(channelId, text, scheduledAt, imageUrl) {
+// Agenda um post no Buffer via GraphQL (sintaxe oficial da documentação)
+async function createPost(channelId, text, scheduledAt) {
   const mutation = `
     mutation CreatePost {
       createPost(input: {
         text: ${JSON.stringify(text)},
         channelId: ${JSON.stringify(channelId)},
-        schedulingType: customScheduled,
-        mode: customScheduled,
+        schedulingType: automatic,
+        mode: customSchedule,
         dueAt: ${JSON.stringify(scheduledAt)}
       }) {
         ... on PostActionSuccess {
@@ -84,34 +84,61 @@ async function createPost(channelId, text, scheduledAt, imageUrl) {
   return resp.json();
 }
 
+// Busca os channelIds reais da conta (nova API GraphQL)
+app.get('/channels', async (req, res) => {
+  const data = await bufferGraphQL(`
+    query {
+      channels {
+        id
+        name
+        service
+      }
+    }
+  `);
+  res.json(data);
+});
+
 // ── Endpoint principal ──────────────────────────────────────────────
 app.post('/schedule', async (req, res) => {
-  const { post_num, copy_ig, copy_li, scheduled_at, image_url, buffer_channels, canal } = req.body;
+  const { post_num, copy_ig, copy_li, scheduled_at, canal } = req.body;
 
   if (!BUFFER_TOKEN) {
     return res.status(500).json({ error: 'BUFFER_TOKEN não configurado' });
   }
 
-  const c = (canal || '').toLowerCase();
-  const ch = buffer_channels || {};
+  // Busca os channelIds reais da nova API GraphQL do Buffer
+  let channels = [];
+  try {
+    const chData = await bufferGraphQL(`query { channels { id name service } }`);
+    channels = chData?.data?.channels || [];
+    console.log('Canais encontrados:', channels.map(c => `${c.service}:${c.name}:${c.id}`));
+  } catch(e) {
+    return res.status(500).json({ error: 'Falha ao buscar canais: ' + e.message });
+  }
 
-  // Determina quais canais usar
+  if (!channels.length) {
+    return res.status(500).json({ error: 'Nenhum canal encontrado na conta Buffer' });
+  }
+
+  const c = (canal || '').toLowerCase();
+
+  // Mapeia canais por serviço
+  const igChannel   = channels.find(ch => ch.service === 'instagram');
+  const liChannels  = channels.filter(ch => ch.service === 'linkedin');
+
   let profileIds = [];
   if (c === 'linkedin' || c === 'li') {
-    profileIds = [
-      { id: ch.linkedin_juliana, text: copy_li },
-      { id: ch.linkedin_page,    text: copy_li }
-    ];
+    profileIds = liChannels.map(ch => ({ id: ch.id, text: copy_li }));
   } else if (c === 'instagram' || c === 'ig') {
-    profileIds = [
-      { id: ch.instagram, text: copy_ig }
-    ];
+    if (igChannel) profileIds = [{ id: igChannel.id, text: copy_ig }];
   } else {
-    profileIds = [
-      { id: ch.instagram,        text: copy_ig },
-      { id: ch.linkedin_juliana, text: copy_li },
-      { id: ch.linkedin_page,    text: copy_li }
-    ];
+    // Padrão: todos
+    if (igChannel) profileIds.push({ id: igChannel.id, text: copy_ig });
+    liChannels.forEach(ch => profileIds.push({ id: ch.id, text: copy_li }));
+  }
+
+  if (!profileIds.length) {
+    return res.status(400).json({ error: 'Nenhum canal compatível encontrado para canal: ' + canal });
   }
 
   const results = [];
