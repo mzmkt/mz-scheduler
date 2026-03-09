@@ -119,7 +119,7 @@ app.get('/channels', async (req, res) => {
 
 // ── Endpoint principal ──────────────────────────────────────────────
 app.post('/schedule', async (req, res) => {
-  const { post_num, copy_ig, copy_li, scheduled_at, canal } = req.body;
+ const { post_num, copy_ig, copy_li, scheduled_at, canal, image_url } = req.body;
 
   if (!BUFFER_TOKEN) {
     return res.status(500).json({ error: 'BUFFER_TOKEN não configurado' });
