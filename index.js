@@ -4,19 +4,23 @@ const fetch = require('node-fetch');
 const app = express();
 app.use(express.json());
 
-// ── CORS ─────────────────────────
+const PORT = process.env.PORT || 3000;
+const BUFFER_TOKEN = process.env.BUFFER_TOKEN;
+
+// ── CORS ─────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+
   next();
 });
 
-const BUFFER_TOKEN = process.env.BUFFER_TOKEN;
-const PORT = process.env.PORT || 3000;
-
-// ── Health check ─────────────────
+// ── Health Check ─────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     status: 'MZ Scheduler online',
@@ -24,36 +28,50 @@ app.get('/', (req, res) => {
   });
 });
 
-// ── GraphQL helper ───────────────
+// ── Helper GraphQL ───────────────────────────
 async function bufferGraphQL(query, variables = {}) {
-  const resp = await fetch('https://api.buffer.com/graphql', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${BUFFER_TOKEN}`
-    },
-    body: JSON.stringify({ query, variables })
-  });
 
-  return resp.json();
+  const response = await fetch(
+    'https://api.buffer.com/graphql',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${BUFFER_TOKEN}`
+      },
+      body: JSON.stringify({
+        query,
+        variables
+      })
+    }
+  );
+
+  const data = await response.json();
+
+  return data;
 }
 
-// ── Buscar canais ────────────────
+// ── Buscar canais do Buffer ──────────────────
 async function getChannels() {
-  const data = await bufferGraphQL(`
+
+  const query = `
     query {
-      channels(input: {}) {
-        id
-        name
-        service
+      viewer {
+        channels {
+          id
+          name
+          service
+        }
       }
     }
-  `);
+  `;
 
-  return data?.data?.channels || [];
+  const data = await bufferGraphQL(query);
+
+  return data?.data?.viewer?.channels || [];
 }
 
-// ── Criar post no Buffer ─────────
+// ── Criar post ───────────────────────────────
 async function createPost(channelId, text, scheduledAt, imageUrl) {
 
   const mutation = `
@@ -84,21 +102,38 @@ async function createPost(channelId, text, scheduledAt, imageUrl) {
     }
   };
 
-  return bufferGraphQL(mutation, variables);
+  const data = await bufferGraphQL(mutation, variables);
+
+  return data;
 }
 
-// ── Endpoint de debug canais ─────
+// ── Endpoint debug canais ────────────────────
 app.get('/channels', async (req, res) => {
+
   try {
+
     const channels = await getChannels();
+
     res.json(channels);
+
   } catch (e) {
-    res.status(500).json({ error: e.message });
+
+    res.status(500).json({
+      error: e.message
+    });
+
   }
+
 });
 
-// ── Endpoint principal ───────────
+// ── Endpoint principal ───────────────────────
 app.post('/schedule', async (req, res) => {
+
+  if (!BUFFER_TOKEN) {
+    return res.status(500).json({
+      error: "BUFFER_TOKEN não configurado"
+    });
+  }
 
   const {
     post_num,
@@ -109,87 +144,100 @@ app.post('/schedule', async (req, res) => {
     image_url
   } = req.body;
 
-  if (!BUFFER_TOKEN) {
-    return res.status(500).json({ error: 'BUFFER_TOKEN não configurado' });
-  }
-
   let channels;
 
   try {
+
     channels = await getChannels();
+
   } catch (e) {
+
     return res.status(500).json({
-      error: 'Erro ao buscar canais',
+      error: "Erro ao buscar canais",
       message: e.message
+    });
+
+  }
+
+  if (!channels.length) {
+    return res.status(500).json({
+      error: "Nenhum canal encontrado no Buffer"
     });
   }
 
   const igChannel = channels.find(c => c.service === 'instagram');
   const liChannels = channels.filter(c => c.service === 'linkedin');
 
-  let profileIds = [];
+  let targets = [];
 
   const c = (canal || '').toLowerCase();
 
-  if (c === 'instagram' || c === 'ig') {
+  if (c === "instagram" || c === "ig") {
 
-    if (igChannel)
-      profileIds.push({
+    if (igChannel) {
+      targets.push({
         id: igChannel.id,
         text: copy_ig
       });
+    }
 
-  } else if (c === 'linkedin' || c === 'li') {
+  } else if (c === "linkedin" || c === "li") {
 
-    liChannels.forEach(ch =>
-      profileIds.push({
+    liChannels.forEach(ch => {
+
+      targets.push({
         id: ch.id,
         text: copy_li
-      })
-    );
+      });
+
+    });
 
   } else {
 
-    if (igChannel)
-      profileIds.push({
+    if (igChannel) {
+      targets.push({
         id: igChannel.id,
         text: copy_ig
       });
+    }
 
-    liChannels.forEach(ch =>
-      profileIds.push({
+    liChannels.forEach(ch => {
+
+      targets.push({
         id: ch.id,
         text: copy_li
-      })
-    );
+      });
+
+    });
+
   }
 
-  if (!profileIds.length) {
+  if (!targets.length) {
     return res.status(400).json({
-      error: 'Nenhum canal encontrado'
+      error: "Nenhum canal compatível encontrado"
     });
   }
 
   const results = [];
   const errors = [];
 
-  for (const profile of profileIds) {
+  for (const t of targets) {
 
     try {
 
-      const data = await createPost(
-        profile.id,
-        profile.text,
+      const response = await createPost(
+        t.id,
+        t.text,
         scheduled_at,
         image_url
       );
 
-      const result = data?.data?.createPost;
+      const result = response?.data?.createPost;
 
       if (result?.post?.id) {
 
         results.push({
-          channelId: profile.id,
+          channelId: t.id,
           postId: result.post.id,
           status: result.post.status
         });
@@ -197,22 +245,22 @@ app.post('/schedule', async (req, res) => {
       } else if (result?.message) {
 
         errors.push({
-          channelId: profile.id,
+          channelId: t.id,
           error: result.message
         });
 
-      } else if (data?.errors) {
+      } else if (response?.errors) {
 
         errors.push({
-          channelId: profile.id,
-          error: data.errors.map(e => e.message).join(', ')
+          channelId: t.id,
+          error: response.errors.map(e => e.message).join(', ')
         });
 
       } else {
 
         errors.push({
-          channelId: profile.id,
-          error: JSON.stringify(data)
+          channelId: t.id,
+          error: JSON.stringify(response)
         });
 
       }
@@ -220,7 +268,7 @@ app.post('/schedule', async (req, res) => {
     } catch (e) {
 
       errors.push({
-        channelId: profile.id,
+        channelId: t.id,
         error: e.message
       });
 
@@ -228,22 +276,29 @@ app.post('/schedule', async (req, res) => {
 
   }
 
-  console.log(`POST ${post_num}`, { results, errors });
+  console.log(`POST ${post_num}`, {
+    results,
+    errors
+  });
 
   if (errors.length === 0) {
+
     return res.json({
       ok: true,
       agendados: results.length,
       results
     });
+
   }
 
   if (results.length > 0) {
+
     return res.status(207).json({
       ok: "parcial",
       results,
       errors
     });
+
   }
 
   return res.status(500).json({
@@ -253,6 +308,9 @@ app.post('/schedule', async (req, res) => {
 
 });
 
+// ── Start server ─────────────────────────────
 app.listen(PORT, () => {
+
   console.log(`MZ Scheduler rodando na porta ${PORT}`);
+
 });
